@@ -64,7 +64,7 @@ def run_inference(input, img_preprocess, detector, det_postprocess,
         
 def run_inference_time(input, img_preprocess, detector, det_postprocess, 
                           ocr_preprocess, classfier, cls_postprocess, 
-                          recognizer, ocr_postprocess, ocr_batch_num) :
+                          recognizer, ocr_postprocess, ocr_batch_num, tf) : ######
     step0 = datetime.utcnow()
     iImg = input
     img = cv2.imread(input)
@@ -108,12 +108,13 @@ def run_inference_time(input, img_preprocess, detector, det_postprocess,
     step2 = datetime.utcnow()
     print("ocr_postprocess {}, got {}".format((step2-step1).total_seconds(), len(txt_res)))
     print("total e2e using: {}".format((step2-step0).total_seconds()))
+    tf.write("total e2e using: {}\n".format((step2-step0).total_seconds())) ######
     return txt_res
     
 def print_res(results):
     num = len(results)
     for i in range(num)  :
-        print("{}, {}, {}, {}, {}, {}, {}, {}, {}, {}".format(
+        print("{},{},{},{},{},{},{},{} {} {}".format(
                 results[i][1][0][0], results[i][1][0][1],
                 results[i][1][1][0], results[i][1][1][1],
                 results[i][1][2][0], results[i][1][2][1],
@@ -123,15 +124,13 @@ def print_res(results):
 def fileout_res(filename, results, output):
     image_num = filename.split('e')[-1].split('.')[0]
     filepath='{}/{}.txt'.format(output,image_num)
-    print("writing result to {}".format(filepath))
     if not os.path.exists(output):
         os.makedirs(output)
     print("writing result to {}".format(filepath))
     with open(filepath, mode='w', encoding='utf-8') as file:
         num = len(results)
         for i in range(num)  :
-
-            item = "{},{},{},{},{},{},{},{},{}\n".format(
+            item = "{},{},{},{},{},{},{},{} {}\n".format(
                 results[i][1][0][0], results[i][1][0][1],
                 results[i][1][1][0], results[i][1][1][1],
                 results[i][1][2][0], results[i][1][2][1],
@@ -161,7 +160,7 @@ def main():
     #init OCR prepreocess
     ocr_preprocess = OcrPreProcess()
     #init ocr postpreocess
-    ocr_postprocess = OCRPostProcess(args.labels, args.drop_score)
+    ocr_postprocess = OCRPostProcess(args.labels, args.drop_score, use_space_char = True)
 
    #init CLS & postpreocess
     classfier = None
@@ -179,24 +178,23 @@ def main():
     filenames=[]
     for filename in os.listdir(args.input):
         #filename = args.input[0]+filename
+
         filenames.append(filename)
     print("start inference testing ... ")
+    time_file = open('{}/time_log.txt'.format(args.output), mode='w', encoding='utf-8') ######
     first_start = datetime.utcnow()
-    run_inference_time(args.input+filenames[0], img_preprocess, detector, det_postprocess, 
-                          ocr_preprocess, classfier, cls_postprocess, 
-                          recognizer, ocr_postprocess, ocr_batch_num)
-    # results.append(len(res))
     first_end = datetime.utcnow()
-    for loop in range(args.count) :
-        for inputz in filenames:
-            res = run_inference(args.input+inputz, img_preprocess, detector, det_postprocess, 
+    for inputz in filenames:
+        res = run_inference_time(args.input+inputz, img_preprocess, detector, det_postprocess, 
                           ocr_preprocess, classfier, cls_postprocess, 
-                          recognizer, ocr_postprocess, ocr_batch_num)
-            if args.output is not None :
-                 fileout_res(inputz, res, args.output)
-
+                          recognizer, ocr_postprocess, ocr_batch_num, time_file) ######
+        if args.output is not None :
+             fileout_res(inputz, res, args.output)
+        else:
+             print_res(res)
     end = datetime.utcnow()
-    files=len(filenames)*args.count
+    time_file.close()
+    files=len(filenames) * args.count
     first_ms = f"{(first_end - first_start).total_seconds() :.3f}"
     ave_ms = f"{(end - first_end).total_seconds() / files :.3f}"
     print("first inference using {}, average using {}".format(first_ms, ave_ms))

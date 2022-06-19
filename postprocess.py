@@ -32,10 +32,10 @@ class DBPostProcess(object):
 
     def __init__(self,
                  thresh=0.3,
-                 box_thresh=0.6,
+                 box_thresh=0.5,
                  max_candidates=1000,
-                 unclip_ratio=1.5,
-                 use_dilation=False,
+                 unclip_ratio=1.6,
+                 use_dilation=True,
                  score_mode="fast",
                  **kwargs):
         self.thresh = thresh
@@ -60,7 +60,7 @@ class DBPostProcess(object):
         bitmap = _bitmap
         height, width = bitmap.shape
 
-        outs = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_EXTERNAL,# cv2.RETR_LIST,
+        outs = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_LIST,
                                 cv2.CHAIN_APPROX_SIMPLE)
         if len(outs) == 3:
             img, contours, _ = outs[0], outs[1], outs[2]
@@ -77,12 +77,12 @@ class DBPostProcess(object):
             if sside < self.min_size:
                 continue
             points = np.array(points)
-            if self.score_mode == "fast":
-                score = self.box_score_fast(pred, points.reshape(-1, 2))
-            else:
-                score = self.box_score_slow(pred, contour)
-            if self.box_thresh > score:
-                continue
+            #if self.score_mode == "fast":
+            score = self.box_score_fast(pred, points.reshape(-1, 2))
+            #else:
+            #    score = self.box_score_slow(pred, contour)
+            #if self.box_thresh > score:
+            #    continue
 
             box = self.unclip(points).reshape(-1, 1, 2)
             box, sside = self.get_mini_boxes(box)
@@ -192,7 +192,13 @@ class DBPostProcess(object):
     def __call__(self, pred, src_h, src_w):
         pred = pred[0, 0, :, :]
         segmentation = pred > self.thresh
-        mask = segmentation
+
+        #if self.dilation_kernel is not None:
+        mask = cv2.dilate(
+                np.array(segmentation).astype(np.uint8),
+                self.dilation_kernel)
+        #else:
+        #    mask = segmentation
         boxes, scores = self.boxes_from_bitmap(pred, mask, src_w, src_h)
         boxes = self.filter_tag_det_res(boxes, src_h, src_w)
         boxes = self.sorted_boxes(boxes)
@@ -271,17 +277,15 @@ class CTCLabelDecode(object):
         self.character_str = []
         if character_dict_path is None:
             self.character_str = "0123456789abcdefghijklmnopqrstuvwxyz"
-            dict_character = list(self.character_str)
         else:
             with open(character_dict_path, "rb") as fin:
                 lines = fin.readlines()
                 for line in lines:
                     line = line.decode('utf-8').strip("\n").strip("\r\n")
-                    self.character_str.append(line)
+                    self.character_str += line
             if use_space_char:
-                self.character_str.append(" ")
-            dict_character = list(self.character_str)
-
+                self.character_str += " "
+        dict_character = list(self.character_str)
         dict_character = self.add_special_char(dict_character)
         self.dict = {}
         for i, char in enumerate(dict_character):
@@ -301,8 +305,7 @@ class CTCLabelDecode(object):
                     continue
                 if is_remove_duplicate:
                     # only for predict
-                    if idx > 0 and text_index[batch_idx][idx - 1] == text_index[
-                            batch_idx][idx]:
+                    if idx > 0 and text_index[batch_idx][idx - 1] == text_index[batch_idx][idx]:
                         continue
                 char_list.append(self.character[int(text_index[batch_idx][idx])])
                 if text_prob is not None:
@@ -330,8 +333,8 @@ class CTCLabelDecode(object):
         return dict_character
 
 class OCRPostProcess(object) :
-    def __init__(self, character_dict_path, threshold = 0.5) :
-        self.decoder = CTCLabelDecode(character_dict_path, True)
+    def __init__(self, character_dict_path, threshold = 0.5, use_space_char = True) :
+        self.decoder = CTCLabelDecode(character_dict_path, use_space_char)
         self.threshold = threshold
     
     def __call__(self, ocr_res, indices, dt_boxes) :

@@ -10,12 +10,13 @@ import math
 import copy
 
 class DetResize(object):
-    def __init__(self, **kwargs):
+    def __init__(self, limit_side_len, limit_type):
         self.resize_type = 0
-        self.limit_side_len = 3000
-        self.limit_type = 'min'
+        self.limit_side_len = limit_side_len
+        self.limit_type = limit_type
 
     def __call__(self, img):
+
         # src_h, src_w, _ = img.shape
         img, [ratio_h, ratio_w] = self.resize_image_type0(img)
         return img
@@ -29,20 +30,20 @@ class DetResize(object):
             img, (ratio_h, ratio_w)
         """
         limit_side_len = self.limit_side_len
-        h, w, c = img.shape
+        h, w, _ = img.shape
 
-        if self.limit_type == 'min' :
-            if min(h, w) < limit_side_len:
-                if h < w:
+        # limit the max side
+        if self.limit_type == 'max':
+            if max(h, w) > limit_side_len:
+                if h > w:
                     ratio = float(limit_side_len) / h
                 else:
                     ratio = float(limit_side_len) / w
             else:
                 ratio = 1.
-        else :
-        # limit the max side
-            if max(h, w) > limit_side_len:
-                if h > w:
+        else:
+            if min(h, w) < limit_side_len:
+                if h < w:
                     ratio = float(limit_side_len) / h
                 else:
                     ratio = float(limit_side_len) / w
@@ -52,8 +53,8 @@ class DetResize(object):
         resize_h = int(h * ratio)
         resize_w = int(w * ratio)
 
-        resize_h = max(int(round(resize_h / 32) * 32), 32)
-        resize_w = max(int(round(resize_w / 32) * 32), 32)
+        resize_h = int(round(resize_h / 32) * 32)
+        resize_w = int(round(resize_w / 32) * 32)
 
         try:
             if int(resize_w) <= 0 or int(resize_h) <= 0:
@@ -62,9 +63,10 @@ class DetResize(object):
         except:
             print(img.shape, resize_w, resize_h)
             sys.exit(0)
-        # ratio_h = resize_h / float(h)
-        # ratio_w = resize_w / float(w)
-        return img, [resize_h, resize_w]
+        ratio_h = resize_h / float(h)
+        ratio_w = resize_w / float(w)
+        # return img, np.array([h, w])
+        return img, [ratio_h, ratio_w]
 
 class OcrPreProcess(object) :
     def resize_norm_img(self, img, max_wh_ratio, imgH = 32):

@@ -57,7 +57,7 @@ class OV_Result :
         self.outputs = outputs
         self.results = {}
         for i in outputs:
-            print('add results item {}'.format(i))
+            #print('add results item {}'.format(i))
             self.results[i] = {}
 
     def completion_callback(self, infer_request: InferRequest, index: any) :
@@ -120,7 +120,6 @@ class TextRecognizer(OV_Operator):
             .set_layout(Layout('NHWC')) 
         ppp.input(self.input_name).model().set_layout(Layout('NCHW'))
 
-        mean = [1.0, 1.0, 1.0]
         scale = [127.5, 127.5, 127.5]
         
         ppp.input(self.input_name).preprocess() \
