@@ -2,7 +2,7 @@ from array import array
 from locale import ABDAY_1
 import numpy as np
 from datetime import datetime
-from openvino.runtime import Core, get_version, AsyncInferQueue, InferRequest, Layout, Type, Tensor
+from openvino.runtime import Core,Model, get_version, AsyncInferQueue, InferRequest, Layout, Type, Tensor
 from openvino.preprocess import PrePostProcessor, ColorFormat, ResizeAlgorithm
 
 import copy
@@ -10,6 +10,7 @@ import copy
 class OV_Operator(object):
     core = None
     model = None
+    model_dynamic = None
     input_names = None
     input_shapes = None
     out_name = None
@@ -42,7 +43,10 @@ class OV_Operator(object):
 
     def create_single_request(self, bf16) :
         config = self.prepare_for_cpu(1, bf16)
-        self.exec_net_single = self.core.compile_model(self.model, 'CPU', config)
+        if self.model_dynamic is not None:
+            self.exec_net_single = self.core.compile_model(self.model_dynamic, 'CPU', config)
+        else :            
+            self.exec_net_single = self.core.compile_model(self.model, 'CPU', config)
         self.request = self.exec_net_single.create_infer_request()
 
     def setup_model(self, stream_num, bf16, shape) :
@@ -52,14 +56,14 @@ class OV_Operator(object):
         self.exec_net = self.core.compile_model(self.model, 'CPU', config)
         self.num_requests = self.exec_net.get_property("OPTIMAL_NUMBER_OF_INFER_REQUESTS")
  
-        # if self.num_requests > 1:
-        #     self.infer_queue = AsyncInferQueue(self.exec_net, self.num_requests)
-        #     self.create_single_request(bf16)
-        # else :
-        #     self.request = self.exec_net.create_infer_request()
-        #     self.infer_queue = None
-        self.infer_queue = AsyncInferQueue(self.exec_net, self.num_requests)
-        self.create_single_request(bf16)
+        if self.num_requests > 1:
+            self.infer_queue = AsyncInferQueue(self.exec_net, self.num_requests)
+            self.create_single_request(bf16)
+        else :
+            self.request = self.exec_net.create_infer_request()
+            self.infer_queue = None
+        # self.infer_queue = AsyncInferQueue(self.exec_net, self.num_requests)
+        # self.create_single_request(bf16)
         # print('Model ({})  using {} streams'.format(self.model.get_friendly_name(), self.num_requests))
 
     def prepare_for_cpu(self, stream_num, bf16=True) :
@@ -69,8 +73,8 @@ class OV_Operator(object):
         config = {}
         supported_properties = self.core.get_property(device, 'SUPPORTED_PROPERTIES')
         config['NUM_STREAMS'] = str(stream_num)
-        config['AFFINITY'] = 'CORE'
-        config['INFERENCE_NUM_THREADS'] = "0" #str(stream_num) #"0"
+        # config['AFFINITY'] = 'CORE'
+        # config['INFERENCE_NUM_THREADS'] = "0" #str(stream_num) #"0"
         config['PERF_COUNT'] = 'NO'
         config['INFERENCE_PRECISION_HINT'] = data_type #'bf16'#'f32'
         config['PERFORMANCE_HINT'] = hint # 'THROUGHPUT' #"LATENCY"
@@ -638,7 +642,29 @@ class CTCSimpleOCR(OV_Operator):
     def __init__(self, model, core=None, postprocess=None):
         super().__init__(model, core, postprocess) 
 
-    def setup_model(self, stream_num = 2, bf16=True, shape=None) :
+    def setup_model(self, stream_num = 2, bf16=True, shape_static=None, shape_dynamic=None) :
+        scale = [127.5]
+        if shape_static is not None and shape_dynamic is not None:
+            self.model_dynamic = self.model.clone()
+            ppp_dyn = PrePostProcessor(self.model_dynamic)
+            ppp_dyn.input(self.input_name).tensor() \
+                    .set_element_type(Type.u8) \
+                    .set_shape(shape_dynamic) \
+                    .set_layout(Layout('NHWC')) 
+            ppp_dyn.input(self.input_name).model().set_layout(Layout('NCHW'))
+            ppp_dyn.input(self.input_name).preprocess() \
+                .convert_element_type(Type.f32) \
+                .mean(scale) \
+                .scale(scale)
+            self.model_dynamic = ppp_dyn.build()
+            shape = shape_static       
+        else :
+            if shape_static is not None :
+                shape = shape_static
+            elif shape_dynamic is not None :
+                shape = shape_dynamic
+            else :
+                shape = None
         ppp = PrePostProcessor(self.model)
         if shape is None:
             ppp.input(self.input_name).tensor() \
@@ -649,17 +675,15 @@ class CTCSimpleOCR(OV_Operator):
                 .set_element_type(Type.u8) \
                 .set_shape(shape) \
                 .set_layout(Layout('NHWC')) 
-        #ppp.input(self.input_name).model().set_layout(Layout('NCHW'))
+        ppp.input(self.input_name).model().set_layout(Layout('NCHW'))
 
-        scale = [127.5]
-        
         ppp.input(self.input_name).preprocess() \
             .convert_element_type(Type.f32) \
             .mean(scale) \
             .scale(scale)
 
         self.model = ppp.build()
-        
+
         super().setup_model(stream_num, bf16, None)
 
         self.ocr_res = OV_Result(self.outputs)
@@ -667,19 +691,24 @@ class CTCSimpleOCR(OV_Operator):
             self.infer_queue.set_callback(self.ocr_res.completion_callback)
 
     def __call__(self, norm_img_batch_list) :
-        if self.request :
+        if self.request and len(norm_img_batch_list)==1:
             for i, input_tensor in enumerate(norm_img_batch_list):
                 result = self.request.infer(input_tensor)
                 self.ocr_res.sync_parser(result, 0)
-            return [self.ocr_res.results[0]] 
+            return self.ocr_res.results 
         
         nsize=len(norm_img_batch_list)
-
+        dyanmic_list = []
         for i, input_tensor in enumerate(norm_img_batch_list):
-            self.infer_queue.start_async({0: input_tensor}, userdata=i)
-            
+            if self.model_dynamic is not None and input_tensor.shape[2] ==320:
+                self.infer_queue.start_async({0: input_tensor}, userdata=i)
+            else :
+                dyanmic_list.append((i,input_tensor))
         self.infer_queue.wait_all()
-
+        for i, input_tensor in dyanmic_list:
+            result = self.request.infer(input_tensor)
+            self.ocr_res.sync_parser(result, i)
+            
         res = []
         if self.postprocess is None:
             for i in range(nsize) :
@@ -688,6 +717,26 @@ class CTCSimpleOCR(OV_Operator):
             for i in range(nsize) :
                 res.append(self.postprocess(self.ocr_res.results[i]))
         return res
+    
+    # def __call__(self, static_list, dyanmic_list) :
+    #     nsize=len(static_list)
+    #     for i, input_tensor in enumerate(static_list):
+    #         self.infer_queue.start_async({0: input_tensor}, userdata=i)
+            
+    #     self.infer_queue.wait_all()
+        
+    #     for i, input_tensor in enumerate(dyanmic_list):
+    #         result = self.request.infer(input_tensor)
+    #         self.ocr_res.sync_parser(result, nsize+i)
+    #     nsize += len(dyanmic_list)
+    #     res = []
+    #     if self.postprocess is None:
+    #         for i in range(nsize) :
+    #             res.append(self.ocr_res.results[i])
+    #     else :
+    #         for i in range(nsize) :
+    #             res.append(self.postprocess(self.ocr_res.results[i]))    
+    #     return res
 
 class SqlBertProcessor(OV_Operator):
     def __init__(self, model, core=None, postprocess=None):
@@ -823,7 +872,7 @@ class TextDetector(OV_Operator):
         else :
             return self.postprocess(self.det_res.results[0][0])
 
-class TextRecognizer(OV_Operator):
+class TextRecognizerOV(OV_Operator):
     def __init__(self, model, core=None, postprocess=None):
         super().__init__(model, core, postprocess) 
 
